@@ -3,9 +3,8 @@ name: Multi-Country Finance Job Scraper
 on:
   schedule:
     # Run daily at 7:00 AM UAE time (3:00 AM UTC)
-    # UAE is UTC+4, so 7 AM UAE = 3 AM UTC
     - cron: '0 3 * * *'
-  workflow_dispatch: # Allow manual triggers for testing
+  workflow_dispatch: # Allow manual triggers
 
 jobs:
   scrape-finance-jobs:
@@ -25,42 +24,56 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 pandas openpyxl lxml html5lib
+        pip install requests==2.31.0 beautifulsoup4==4.12.2 pandas==2.1.4 openpyxl==3.1.2 lxml==4.9.3
         
-- name: Run job scraper
-  env:
-    EMAIL_USER: ${{ secrets.EMAIL_USER }}
-    EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-    RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-  run: |
-    echo "Starting job scraper at $(date)"
-    echo "Python version: $(python --version)"
-    echo "Pip version: $(pip --version)"
-    echo "Installed packages:"
-    pip list
-    echo "Files in current directory:"
-    ls -la
-    echo "Checking if Excel file exists:"
-    ls -la "top companies.xlsx" || echo "Excel file not found!"
-    echo "Running Python script with verbose output:"
-    python -u scraper.py 2>&1 || echo "Python script failed with exit code $?"
-    echo "Job scraper completed at $(date)"
+    - name: Debug environment
+      run: |
+        echo "Python version: $(python --version)"
+        echo "Pip version: $(pip --version)"
+        echo "Current directory contents:"
+        ls -la
+        echo "Checking for Excel file:"
+        if [ -f "top companies.xlsx" ]; then
+          echo "✅ Excel file found: top companies.xlsx"
+          file "top companies.xlsx"
+        else
+          echo "❌ Excel file 'top companies.xlsx' not found"
+          echo "Available files:"
+          find . -name "*.xlsx" -o -name "*.xls"
+        fi
+        echo "Environment variables set:"
+        echo "EMAIL_USER: ${EMAIL_USER:+SET}"
+        echo "EMAIL_PASS: ${EMAIL_PASS:+SET}"
+        echo "RECIPIENT_EMAIL: ${RECIPIENT_EMAIL:+SET}"
+        
+    - name: Run job scraper
+      env:
+        EMAIL_USER: ${{ secrets.EMAIL_USER }}
+        EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: |
+        echo "🔍 Starting job scraper at $(date)"
+        python -u scraper.py
+        echo "✅ Job scraper completed at $(date)"
         
     - name: Commit updated seen jobs
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add seen_jobs.json
-        git diff --staged --quiet || git commit -m "Update seen jobs database - $(date '+%Y-%m-%d %H:%M UTC')"
-        git push
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update seen jobs database - $(date '+%Y-%m-%d %H:%M UTC')"
+          git push
+        fi
       continue-on-error: true
         
-    - name: Upload logs (if scraper fails)
+    - name: Upload artifacts on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: scraper-logs
+        name: debug-logs
         path: |
-          *.log
           seen_jobs.json
-        retention-days: 7
+        retention-days: 3
