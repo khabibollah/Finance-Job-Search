@@ -18,7 +18,7 @@ import random
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class MultiCountryJobScraper:
+class AllJobsScraper:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
@@ -27,35 +27,14 @@ class MultiCountryJobScraper:
         self.lock = Lock()
         self.all_jobs = []
         
-        # Target countries
+        # Target countries (keep country filtering)
         self.target_countries = ['UAE', 'Saudi Arabia', 'Qatar', 'United Kingdom', 'UK']
-        
-        # Comprehensive senior finance job titles
-        self.target_titles = [
-            'cfo', 'chief financial officer', 'chief finance officer',
-            'finance director', 'finance lead', 'corporate finance director',
-            'finance vp', 'finance svp', 'finance team lead',
-            'finance and operations lead', 'financial services business development leader',
-            'commercial finance lead', 'commercial finance director',
-            'commercial finance vp', 'commercial finance svp',
-            # Additional senior finance titles
-            'group finance director', 'regional finance director', 'head of finance',
-            'senior finance director', 'deputy cfo', 'assistant cfo',
-            'finance controller', 'group controller', 'regional controller',
-            'treasury director', 'head of treasury', 'treasury lead',
-            'fp&a director', 'financial planning director', 'budget director',
-            'investor relations director', 'ir director', 'head of investor relations',
-            'financial reporting director', 'corporate development director',
-            'business finance director', 'divisional finance director',
-            'finance transformation director', 'finance operations director',
-            'chief accounting officer', 'cao', 'head of accounting'
-        ]
         
     def load_companies_from_excel(self):
         """Load companies from Excel file and add additional companies"""
         try:
             # Read the Excel file (Column A, no header)
-            df = pd.read_excel('Top Companies.xlsx', header=None, names=['company'])
+            df = pd.read_excel('top companies.xlsx', header=None, names=['company'])
             existing_companies = df['company'].tolist()
             
             logging.info(f"Loaded {len(existing_companies)} companies from Excel file")
@@ -132,7 +111,7 @@ class MultiCountryJobScraper:
                         'job_selectors': [
                             '.job-listing', '.job-item', '.position', '.career-item',
                             '[class*="job"]', '[class*="career"]', '[class*="position"]',
-                            '.opportunity', '.role', '.opening'
+                            '.opportunity', '.role', '.opening', '.vacancy'
                         ]
                     }
             
@@ -214,17 +193,21 @@ class MultiCountryJobScraper:
             for selector in company_config['job_selectors']:
                 elements = soup.select(selector)
                 if elements:
-                    job_elements = elements[:30]  # Limit per selector
+                    job_elements = elements[:50]  # Increased limit to capture more jobs
                     break
             
             # If no job elements found, try generic selectors
             if not job_elements:
-                generic_selectors = ['a[href*="job"]', 'a[href*="career"]', 'div:contains("finance")', 'h3', 'h4']
+                generic_selectors = [
+                    'a[href*="job"]', 'a[href*="career"]', 'a[href*="position"]',
+                    '.job', '.career', '.position', '.role', '.opportunity',
+                    'h3', 'h4', 'div[class*="title"]'
+                ]
                 for selector in generic_selectors:
                     try:
                         elements = soup.select(selector)
                         if elements:
-                            job_elements = elements[:20]
+                            job_elements = elements[:30]
                             break
                     except:
                         continue
@@ -241,7 +224,7 @@ class MultiCountryJobScraper:
             with self.lock:
                 self.all_jobs.extend(jobs_found)
             
-            logging.info(f"✅ {company_name}: Found {len(jobs_found)} relevant jobs")
+            logging.info(f"✅ {company_name}: Found {len(jobs_found)} jobs in target countries")
             return jobs_found
             
         except Exception as e:
@@ -252,6 +235,10 @@ class MultiCountryJobScraper:
         """Extract job information from HTML element"""
         # Get text content
         element_text = element.get_text(strip=True)
+        
+        # Skip if text is too short or looks like navigation
+        if len(element_text) < 5 or element_text.lower() in ['jobs', 'careers', 'search', 'apply', 'home']:
+            return None
         
         # Try to find title
         title = None
@@ -264,8 +251,17 @@ class MultiCountryJobScraper:
             title_elem = element.find(['h1', 'h2', 'h3', 'h4', 'h5', 'a'])
             if title_elem:
                 title = title_elem.get_text(strip=True)
+            else:
+                # Use first line of text as title
+                lines = element_text.split('\n')
+                title = lines[0].strip() if lines else element_text
         
         if not title or len(title) < 3:
+            return None
+        
+        # Skip common non-job elements
+        skip_keywords = ['cookie', 'privacy', 'about us', 'contact', 'home', 'search', 'filter', 'menu']
+        if any(keyword in title.lower() for keyword in skip_keywords):
             return None
         
         # Extract URL
@@ -291,17 +287,11 @@ class MultiCountryJobScraper:
         }
     
     def is_relevant_job(self, job):
-        """Check if job matches our criteria"""
-        title_lower = job['title'].lower()
-        text_lower = job['full_text'].lower()
-        
-        # Check for finance titles
-        has_finance_title = any(title in title_lower for title in self.target_titles)
-        
-        # Check for target countries
+        """Check if job is in target countries (NO title filtering)"""
+        # Only filter by country - accept ALL job titles
         has_target_country = job['country'] in self.target_countries
         
-        return has_finance_title and has_target_country
+        return has_target_country
     
     def extract_location(self, text):
         """Extract specific location from text"""
@@ -379,7 +369,7 @@ class MultiCountryJobScraper:
         return self.all_jobs
     
     def send_email(self, new_jobs):
-        """Send email with new job listings organized by country and company"""
+        """Send email with all new job listings organized by country and company"""
         if not new_jobs:
             logging.info("No new jobs found - skipping email")
             return
@@ -404,14 +394,14 @@ class MultiCountryJobScraper:
         msg = MIMEMultipart()
         msg['From'] = email_user
         msg['To'] = recipient
-        msg['Subject'] = f"🎯 {len(new_jobs)} New Senior Finance Jobs Across {len(jobs_by_country)} Countries"
+        msg['Subject'] = f"🌍 {len(new_jobs)} New Job Opportunities Across {len(jobs_by_country)} Countries"
         
         # Create comprehensive HTML email
         html_body = f"""
         <html>
         <body style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 1000px; margin: 0 auto; line-height: 1.6;">
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                <h1 style="margin: 0; font-size: 28px;">Senior Finance Jobs Alert</h1>
+                <h1 style="margin: 0; font-size: 28px;">All Jobs Alert</h1>
                 <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">
                     {datetime.now().strftime('%A, %B %d, %Y - 7:00 AM UAE Time')}
                 </p>
@@ -421,12 +411,12 @@ class MultiCountryJobScraper:
                 <h3 style="color: #28a745; margin-top: 0;">📊 Today's Summary</h3>
                 <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;">
                     <div>
-                        <p><strong>{len(new_jobs)}</strong> new senior finance positions</p>
-                        <p><strong>{len(jobs_by_country)}</strong> countries with opportunities</p>
+                        <p><strong>{len(new_jobs)}</strong> new job opportunities</p>
+                        <p><strong>{len(jobs_by_country)}</strong> countries with openings</p>
                     </div>
                     <div>
                         <p><strong>{sum(len(companies) for companies in jobs_by_country.values())}</strong> companies hiring</p>
-                        <p><strong>Focus:</strong> CFO, Finance Director, VP Finance roles</p>
+                        <p><strong>Coverage:</strong> All roles in UAE, Saudi Arabia, Qatar & UK</p>
                     </div>
                 </div>
             </div>
@@ -476,7 +466,7 @@ class MultiCountryJobScraper:
                 <p style="margin: 0; font-size: 14px;">
                     <strong>Automated Daily Monitoring</strong><br>
                     Scanning ~100 companies • Running daily at 7:00 AM UAE time<br>
-                    <em>Targeting: CFO, Finance Director, VP Finance roles in UAE, Saudi Arabia, Qatar & UK</em>
+                    <em>ALL job opportunities in UAE, Saudi Arabia, Qatar & UK</em>
                 </p>
                 <p style="margin: 10px 0 0 0; font-size: 12px; opacity: 0.8;">
                     Powered by GitHub Actions • Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
@@ -507,9 +497,9 @@ class MultiCountryJobScraper:
         return [self.create_company_config(company) for company in companies if self.create_company_config(company)]
 
 def main():
-    scraper = MultiCountryJobScraper()
+    scraper = AllJobsScraper()
     
-    logging.info("🔍 Starting multi-country senior finance job search")
+    logging.info("🔍 Starting comprehensive job search for ALL positions")
     start_time = time.time()
     
     # Load companies
