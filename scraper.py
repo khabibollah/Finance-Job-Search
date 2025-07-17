@@ -30,27 +30,54 @@ class LinkedInJobScraper:
         
         self.all_jobs = []
         
-        # LinkedIn location IDs for your target countries
-        self.linkedin_locations = {
-            'UAE': {
-                'Dubai': '105218', 
-                'Abu Dhabi': '104769',
-                'UAE': '104305'
-            },
-            'Saudi Arabia': {
-                'Riyadh': '106906',
-                'Jeddah': '103969', 
-                'Saudi Arabia': '103323'
-            },
-            'Qatar': {
-                'Doha': '100961',
-                'Qatar': '100876'
-            },
-            'United Kingdom': {
-                'London': '101165',
-                'Manchester': '100556',
-                'UK': '101282'
-            }
+        # Improved location search terms that LinkedIn recognizes
+        self.search_locations = {
+            'UAE': [
+                'Dubai, United Arab Emirates',
+                'Abu Dhabi, United Arab Emirates', 
+                'United Arab Emirates',
+                'Dubai',
+                'Abu Dhabi'
+            ],
+            'Saudi Arabia': [
+                'Riyadh, Saudi Arabia',
+                'Jeddah, Saudi Arabia',
+                'Saudi Arabia',
+                'Riyadh',
+                'Jeddah'
+            ],
+            'Qatar': [
+                'Doha, Qatar',
+                'Qatar',
+                'Doha'
+            ],
+            'United Kingdom': [
+                'London, United Kingdom',
+                'United Kingdom',
+                'London',
+                'Manchester, United Kingdom',
+                'Birmingham, United Kingdom'
+            ]
+        }
+        
+        # Location validation patterns
+        self.location_patterns = {
+            'UAE': [
+                r'\bdubai\b', r'\babu dhabi\b', r'\bsharjah\b', r'\bajman\b',
+                r'\bunited arab emirates\b', r'\buae\b', r'\bemirati?\b'
+            ],
+            'Saudi Arabia': [
+                r'\briyadh\b', r'\bjeddah\b', r'\bdammam\b', r'\bkhobar\b',
+                r'\bsaudi arabia\b', r'\bksa\b', r'\bsaudi\b'
+            ],
+            'Qatar': [
+                r'\bdoha\b', r'\bqatar\b', r'\bqatari?\b'
+            ],
+            'United Kingdom': [
+                r'\blondon\b', r'\bmanchester\b', r'\bbirmingham\b', r'\bedinburgh\b',
+                r'\bglasgow\b', r'\bunited kingdom\b', r'\bu\.?k\.?\b', r'\bbritain\b',
+                r'\bengland\b', r'\bscotland\b', r'\bwales\b'
+            ]
         }
         
         # Senior finance keywords for LinkedIn search
@@ -59,19 +86,14 @@ class LinkedInJobScraper:
             "Chief Financial Officer", 
             "Finance Director",
             "VP Finance",
-            "Finance Lead",
-            "Commercial Finance Director",
-            "Finance VP",
-            "Finance SVP",
-            "Treasury Director",
-            "FP&A Director",
-            "Financial Planning Director",
+            "SVP Finance",
             "Head of Finance",
             "Regional Finance Director",
-            "Group Finance Director",
-            "Deputy CFO",
-            "Finance Controller",
-            "Business Finance Director"
+            "Commercial Finance Director",
+            "Treasury Director",
+            "FP&A Director",
+            "Financial Controller",
+            "Group Finance Director"
         ]
         
     def load_companies_from_excel(self):
@@ -98,8 +120,68 @@ class LinkedInJobScraper:
         with open('seen_jobs.json', 'w') as f:
             json.dump(list(seen_jobs), f, indent=2)
     
-    def search_linkedin_jobs(self, keyword: str, location_id: str, location_name: str, country: str) -> List[Dict]:
-        """Search LinkedIn jobs using their public job search"""
+    def validate_job_location(self, job_text: str) -> str:
+        """Validate job location using regex patterns"""
+        job_text_lower = job_text.lower()
+        
+        for country, patterns in self.location_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, job_text_lower):
+                    logging.debug(f"Location match: '{pattern}' found in job text for {country}")
+                    return country
+        
+        return None
+    
+    def extract_detailed_location(self, job_text: str, validated_country: str) -> str:
+        """Extract specific city/location after country validation"""
+        job_text_lower = job_text.lower()
+        
+        # UAE cities
+        if validated_country == 'UAE':
+            if re.search(r'\bdubai\b', job_text_lower):
+                return 'Dubai, UAE'
+            elif re.search(r'\babu dhabi\b', job_text_lower):
+                return 'Abu Dhabi, UAE'
+            elif re.search(r'\bsharjah\b', job_text_lower):
+                return 'Sharjah, UAE'
+            else:
+                return 'UAE'
+        
+        # Saudi cities
+        elif validated_country == 'Saudi Arabia':
+            if re.search(r'\briyadh\b', job_text_lower):
+                return 'Riyadh, Saudi Arabia'
+            elif re.search(r'\bjeddah\b', job_text_lower):
+                return 'Jeddah, Saudi Arabia'
+            elif re.search(r'\bdammam\b', job_text_lower):
+                return 'Dammam, Saudi Arabia'
+            else:
+                return 'Saudi Arabia'
+        
+        # Qatar cities
+        elif validated_country == 'Qatar':
+            if re.search(r'\bdoha\b', job_text_lower):
+                return 'Doha, Qatar'
+            else:
+                return 'Qatar'
+        
+        # UK cities
+        elif validated_country == 'United Kingdom':
+            if re.search(r'\blondon\b', job_text_lower):
+                return 'London, UK'
+            elif re.search(r'\bmanchester\b', job_text_lower):
+                return 'Manchester, UK'
+            elif re.search(r'\bbirmingham\b', job_text_lower):
+                return 'Birmingham, UK'
+            elif re.search(r'\bedinburgh\b', job_text_lower):
+                return 'Edinburgh, UK'
+            else:
+                return 'United Kingdom'
+        
+        return f'{validated_country}'
+    
+    def search_linkedin_jobs(self, keyword: str, location: str, target_country: str) -> List[Dict]:
+        """Search LinkedIn jobs with improved location filtering"""
         jobs = []
         
         try:
@@ -108,61 +190,90 @@ class LinkedInJobScraper:
             
             params = {
                 'keywords': keyword,
-                'location': location_name,
-                'locationId': location_id,
-                'geoId': location_id,
+                'location': location,
                 'sortBy': 'DD',  # Date descending (newest first)
                 'position': '1',
-                'pageNum': '0',
-                'start': '0'
+                'pageNum': '0'
             }
             
             url = f"{base_url}?" + urllib.parse.urlencode(params)
-            logging.info(f"Searching LinkedIn: {keyword} in {location_name}")
+            logging.info(f"Searching LinkedIn: '{keyword}' in '{location}' (expecting {target_country})")
             
             response = self.session.get(url, timeout=15)
             
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Find job cards on LinkedIn
-                job_cards = soup.find_all('div', {'class': lambda x: x and 'result-card' in x}) or \
-                           soup.find_all('div', {'class': lambda x: x and 'job-search-card' in x}) or \
-                           soup.find_all('li', {'class': lambda x: x and 'result-card' in x})
+                # Find job cards on LinkedIn - try multiple selectors
+                job_cards = (
+                    soup.find_all('div', {'class': lambda x: x and 'result-card' in x}) or
+                    soup.find_all('div', {'class': lambda x: x and 'job-search-card' in x}) or
+                    soup.find_all('li', {'class': lambda x: x and 'result-card' in x}) or
+                    soup.find_all('div', {'data-entity-urn': True}) or
+                    soup.find_all('div', {'class': lambda x: x and 'base-card' in x})
+                )
                 
-                logging.info(f"Found {len(job_cards)} job cards on page")
+                logging.info(f"Found {len(job_cards)} potential job cards")
                 
-                for card in job_cards[:20]:  # Limit to first 20 jobs per search
+                validated_jobs = 0
+                rejected_jobs = 0
+                
+                for i, card in enumerate(job_cards[:25]):  # Process first 25 cards
                     try:
-                        job = self.extract_job_from_card(card, country, location_name)
+                        job = self.extract_and_validate_job(card, target_country, location)
                         if job:
                             jobs.append(job)
+                            validated_jobs += 1
+                            if i < 3:  # Log first few jobs for debugging
+                                logging.info(f"✅ Valid job: '{job['title']}' at {job['company']} in {job['location']}")
+                        else:
+                            rejected_jobs += 1
+                            if i < 3:  # Log first few rejections for debugging
+                                card_text = card.get_text()[:100].replace('\n', ' ')
+                                logging.info(f"❌ Rejected job: {card_text}...")
                     except Exception as e:
-                        logging.warning(f"Error extracting job from card: {e}")
+                        logging.warning(f"Error processing job card {i}: {e}")
                         continue
                 
+                logging.info(f"Location validation results: {validated_jobs} valid, {rejected_jobs} rejected for {target_country}")
+                
                 # Rate limiting
-                time.sleep(2)
+                time.sleep(3)
                 
             else:
                 logging.warning(f"LinkedIn search returned status {response.status_code}")
                 
         except Exception as e:
-            logging.error(f"Error searching LinkedIn for {keyword} in {location_name}: {e}")
+            logging.error(f"Error searching LinkedIn for {keyword} in {location}: {e}")
         
-        logging.info(f"LinkedIn: Found {len(jobs)} jobs for '{keyword}' in {location_name}")
+        logging.info(f"LinkedIn: Found {len(jobs)} VALIDATED jobs for '{keyword}' in {target_country}")
         return jobs
     
-    def extract_job_from_card(self, card, country: str, location: str) -> Dict:
-        """Extract job information from LinkedIn job card"""
+    def extract_and_validate_job(self, card, expected_country: str, search_location: str) -> Dict:
+        """Extract job info and validate location matches expected country"""
         try:
+            # Get all text from the card for analysis
+            full_card_text = card.get_text()
+            
+            # Validate location FIRST
+            validated_country = self.validate_job_location(full_card_text)
+            
+            if validated_country != expected_country:
+                # Log the mismatch for debugging
+                logging.debug(f"Location mismatch: expected {expected_country}, validated as {validated_country or 'Unknown'}")
+                return None
+            
             # Extract title
-            title_elem = card.find('h3') or card.find('a', {'class': lambda x: x and 'job-title' in x}) or \
-                        card.find('span', {'class': lambda x: x and 'sr-only' in x})
+            title_elem = (
+                card.find('h3') or 
+                card.find('a', {'class': lambda x: x and 'job-title' in x}) or
+                card.find('span', {'class': lambda x: x and 'sr-only' in x}) or
+                card.select_one('[data-entity-urn] h3') or
+                card.select_one('a[href*="/jobs/view/"]')
+            )
             
             title = ""
             if title_elem:
-                # Try to get text from various elements
                 title = title_elem.get_text(strip=True)
                 if not title and title_elem.find('a'):
                     title = title_elem.find('a').get_text(strip=True)
@@ -171,8 +282,12 @@ class LinkedInJobScraper:
                 return None
             
             # Extract company
-            company_elem = card.find('h4') or card.find('a', {'class': lambda x: x and 'company' in x}) or \
-                          card.find('span', {'class': lambda x: x and 'company' in x})
+            company_elem = (
+                card.find('h4') or 
+                card.find('a', {'class': lambda x: x and 'company' in x}) or
+                card.find('span', {'class': lambda x: x and 'company' in x}) or
+                card.find('div', {'class': lambda x: x and 'company' in x})
+            )
             
             company = "Unknown Company"
             if company_elem:
@@ -192,19 +307,18 @@ class LinkedInJobScraper:
                 if 'linkedin.com' in job_url and '?' in job_url:
                     job_url = job_url.split('?')[0]
             
-            # Extract location from text
-            card_text = card.get_text()
-            extracted_location = self.extract_location_from_text(card_text, location)
+            # Extract specific location
+            detailed_location = self.extract_detailed_location(full_card_text, validated_country)
             
             # Create job object
             job = {
-                'id': f"linkedin:{job_url.split('/')[-1] if job_url else title}",
+                'id': f"linkedin:{job_url.split('/')[-1] if job_url else title.replace(' ', '_')}",
                 'title': title,
                 'company': company,
-                'location': extracted_location,
-                'country': country,
+                'location': detailed_location,
+                'country': validated_country,
                 'url': job_url,
-                'description': card_text[:200] + "..." if len(card_text) > 200 else card_text,
+                'description': full_card_text[:200] + "..." if len(full_card_text) > 200 else full_card_text,
                 'posted_date': datetime.now().strftime('%Y-%m-%d'),
                 'source': 'LinkedIn'
             }
@@ -215,61 +329,22 @@ class LinkedInJobScraper:
             logging.warning(f"Error extracting job details: {e}")
             return None
     
-    def extract_location_from_text(self, text: str, default_location: str) -> str:
-        """Extract specific location from job card text"""
-        text_lower = text.lower()
-        
-        # UAE locations
-        if 'dubai' in text_lower:
-            return 'Dubai, UAE'
-        elif 'abu dhabi' in text_lower:
-            return 'Abu Dhabi, UAE'
-        elif 'sharjah' in text_lower:
-            return 'Sharjah, UAE'
-        
-        # Saudi locations
-        elif 'riyadh' in text_lower:
-            return 'Riyadh, Saudi Arabia'
-        elif 'jeddah' in text_lower:
-            return 'Jeddah, Saudi Arabia'
-        elif 'dammam' in text_lower:
-            return 'Dammam, Saudi Arabia'
-        
-        # Qatar locations
-        elif 'doha' in text_lower:
-            return 'Doha, Qatar'
-        elif 'qatar' in text_lower and 'doha' not in text_lower:
-            return 'Qatar'
-        
-        # UK locations
-        elif 'london' in text_lower:
-            return 'London, UK'
-        elif 'manchester' in text_lower:
-            return 'Manchester, UK'
-        elif 'birmingham' in text_lower:
-            return 'Birmingham, UK'
-        elif 'edinburgh' in text_lower:
-            return 'Edinburgh, UK'
-        
-        # Default to the search location
-        return default_location
-    
     def search_all_linkedin_jobs(self) -> List[Dict]:
-        """Search LinkedIn for all target positions across all locations"""
+        """Search LinkedIn for all target positions with strict location validation"""
         all_jobs = []
         
-        logging.info("🚀 Starting comprehensive LinkedIn job search")
+        logging.info("🚀 Starting LinkedIn job search with STRICT location validation")
         
         # Search each keyword in each location
         for keyword in self.finance_keywords:
-            for country, locations in self.linkedin_locations.items():
-                for location_name, location_id in locations.items():
+            for country, search_locations in self.search_locations.items():
+                for location in search_locations:
                     
-                    jobs = self.search_linkedin_jobs(keyword, location_id, location_name, country)
+                    jobs = self.search_linkedin_jobs(keyword, location, country)
                     all_jobs.extend(jobs)
                     
-                    # Be respectful with rate limiting
-                    time.sleep(3)
+                    # Respectful rate limiting
+                    time.sleep(4)
         
         # Remove duplicates based on job ID
         seen_ids = set()
@@ -279,7 +354,15 @@ class LinkedInJobScraper:
                 seen_ids.add(job['id'])
                 unique_jobs.append(job)
         
-        logging.info(f"Found {len(unique_jobs)} unique jobs on LinkedIn")
+        # Log summary by country
+        country_counts = {}
+        for job in unique_jobs:
+            country = job['country']
+            country_counts[country] = country_counts.get(country, 0) + 1
+        
+        logging.info(f"Final results by country: {country_counts}")
+        logging.info(f"Found {len(unique_jobs)} unique VALIDATED jobs on LinkedIn")
+        
         return unique_jobs
     
     def filter_by_companies(self, jobs: List[Dict], target_companies: List[str]) -> List[Dict]:
@@ -332,7 +415,7 @@ class LinkedInJobScraper:
         msg = MIMEMultipart()
         msg['From'] = email_user
         msg['To'] = recipient
-        msg['Subject'] = f"💼 {len(new_jobs)} New Senior Finance Jobs from LinkedIn"
+        msg['Subject'] = f"💼 {len(new_jobs)} VERIFIED Senior Finance Jobs from LinkedIn"
         
         # Create comprehensive HTML email
         html_body = f"""
@@ -344,20 +427,20 @@ class LinkedInJobScraper:
                     {datetime.now().strftime('%A, %B %d, %Y - 7:00 AM UAE Time')}
                 </p>
                 <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.8;">
-                    Powered by LinkedIn Job Search
+                    ✅ Location Verified • Powered by LinkedIn
                 </p>
             </div>
             
-            <div style="background-color: #f8f9fa; padding: 25px; border-left: 4px solid #0077B5;">
-                <h3 style="color: #0077B5; margin-top: 0;">📊 Today's LinkedIn Results</h3>
+            <div style="background-color: #f8f9fa; padding: 25px; border-left: 4px solid #28a745;">
+                <h3 style="color: #28a745; margin-top: 0;">📊 Today's VERIFIED LinkedIn Results</h3>
                 <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;">
                     <div>
-                        <p><strong>{len(new_jobs)}</strong> new senior finance positions</p>
+                        <p><strong>{len(new_jobs)}</strong> location-verified positions</p>
                         <p><strong>{len(jobs_by_country)}</strong> countries with opportunities</p>
                     </div>
                     <div>
                         <p><strong>{sum(len(companies) for companies in jobs_by_country.values())}</strong> companies hiring</p>
-                        <p><strong>Focus:</strong> CFO, Finance Director, VP Finance roles</p>
+                        <p><strong>Quality:</strong> All locations double-checked</p>
                     </div>
                 </div>
             </div>
@@ -370,7 +453,7 @@ class LinkedInJobScraper:
             html_body += f"""
             <div style="margin: 30px 0;">
                 <h2 style="color: #2c3e50; border-bottom: 3px solid #0077B5; padding-bottom: 10px; background-color: #ecf0f1; padding: 15px; margin: 0;">
-                    🌍 {country} ({country_total} position{'s' if country_total > 1 else ''})
+                    🌍 {country} ({country_total} verified position{'s' if country_total > 1 else ''})
                 </h2>
             """
             
@@ -386,9 +469,8 @@ class LinkedInJobScraper:
                     html_body += f"""
                     <div style="border: 1px solid #dee2e6; border-radius: 8px; padding: 20px; margin: 10px 0; background-color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
                         <h4 style="color: #0077B5; margin-top: 0; font-size: 18px;">{job['title']}</h4>
-                        <p style="margin: 8px 0; color: #6c757d;">📍 {job['location']}</p>
-                        <p style="margin: 8px 0; color: #6c757d; font-size: 14px;">🔗 Source: LinkedIn</p>
-                        <p style="margin: 8px 0; color: #6c757d; font-size: 13px;">{job['description'][:150]}...</p>
+                        <p style="margin: 8px 0; color: #6c757d;">📍 {job['location']} ✅</p>
+                        <p style="margin: 8px 0; color: #6c757d; font-size: 14px;">🔗 Source: LinkedIn (Location Verified)</p>
                         <div style="margin-top: 15px;">
                             <a href="{job['url']}" target="_blank" 
                                style="background: linear-gradient(45deg, #0077B5, #005885); color: white; padding: 12px 24px; 
@@ -407,12 +489,12 @@ class LinkedInJobScraper:
         html_body += f"""
             <div style="background-color: #6c757d; color: white; padding: 25px; text-align: center; border-radius: 0 0 10px 10px; margin-top: 40px;">
                 <p style="margin: 0; font-size: 14px;">
-                    <strong>LinkedIn Professional Network</strong><br>
-                    Advanced job search • Running daily at 7:00 AM UAE time<br>
-                    <em>CFO, Finance Director, VP Finance roles in UAE, Saudi Arabia, Qatar & UK</em>
+                    <strong>LinkedIn Professional Network with Location Validation</strong><br>
+                    Strict location filtering • Running daily at 7:00 AM UAE time<br>
+                    <em>All job locations verified using regex pattern matching</em>
                 </p>
                 <p style="margin: 10px 0 0 0; font-size: 12px; opacity: 0.8;">
-                    Source: LinkedIn Jobs • Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
+                    Source: LinkedIn Jobs • Location Verified • {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
                 </p>
             </div>
         </body>
@@ -433,7 +515,7 @@ class LinkedInJobScraper:
 def main():
     scraper = LinkedInJobScraper()
     
-    logging.info("🔍 Starting LinkedIn-focused job search for senior finance positions")
+    logging.info("🔍 Starting LinkedIn job search with STRICT location validation")
     start_time = time.time()
     
     # Load companies from Excel for filtering
@@ -444,7 +526,7 @@ def main():
     seen_jobs = scraper.load_seen_jobs()
     initial_count = len(seen_jobs)
     
-    # Search LinkedIn for all positions
+    # Search LinkedIn for all positions with location validation
     all_jobs = scraper.search_all_linkedin_jobs()
     
     # Filter and prioritize by target companies
@@ -471,7 +553,7 @@ def main():
     📈 LINKEDIN JOB SEARCH COMPLETE:
     ⏱️  Duration: {duration:.1f} seconds
     🎯 Finance keywords searched: {len(scraper.finance_keywords)}
-    🌍 Locations searched: {sum(len(locs) for locs in scraper.linkedin_locations.values())}
+    🌍 Location searches performed: {sum(len(locs) for locs in scraper.search_locations.values())}
     🏢 Total jobs found: {len(all_jobs)}
     ✨ Jobs after filtering: {len(filtered_jobs)}
     🆕 New jobs found: {len(new_jobs)}
