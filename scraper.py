@@ -173,53 +173,160 @@ class AllJobsScraper:
         with open('seen_jobs.json', 'w') as f:
             json.dump(list(seen_jobs), f, indent=2)
     
+    def debug_test_companies(self, companies):
+        """Test a few companies manually to see what's happening"""
+        logging.info("🧪 DEBUG: Testing first 5 companies manually...")
+        
+        for i, company in enumerate(companies[:5]):
+            logging.info(f"\n🔬 MANUAL TEST {i+1}: {company['name']}")
+            logging.info(f"URL: {company['url']}")
+            
+            try:
+                response = self.session.get(company['url'], timeout=10)
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                logging.info(f"Page loaded successfully. Status: {response.status_code}")
+                logging.info(f"Page title: {soup.title.string if soup.title else 'No title'}")
+                
+                # Test all our selectors
+                total_elements = 0
+                for selector in company['job_selectors']:
+                    try:
+                        elements = soup.select(selector)
+                        logging.info(f"  Selector '{selector}': {len(elements)} elements")
+                        total_elements += len(elements)
+                    except Exception as e:
+                        logging.info(f"  Selector '{selector}': ERROR - {e}")
+                
+                # Look for any text containing job keywords
+                page_text = soup.get_text().lower()
+                job_keywords = ['job', 'career', 'position', 'role', 'opportunity', 'vacancy']
+                keyword_counts = {keyword: page_text.count(keyword) for keyword in job_keywords}
+                logging.info(f"  Job keyword counts: {keyword_counts}")
+                
+                # Check for country mentions
+                country_keywords = ['uae', 'dubai', 'saudi', 'qatar', 'uk', 'london', 'riyadh', 'doha']
+                country_counts = {keyword: page_text.count(keyword) for keyword in country_keywords}
+                logging.info(f"  Country mentions: {country_counts}")
+                
+                # Check if this looks like a careers page
+                careers_indicators = ['apply', 'hiring', 'openings', 'positions', 'join our team']
+                career_signals = sum(page_text.count(indicator) for indicator in careers_indicators)
+                logging.info(f"  Career page signals: {career_signals}")
+                
+                logging.info(f"  SUMMARY: {total_elements} total elements from all selectors")
+                
+            except Exception as e:
+                logging.error(f"Debug test failed for {company['name']}: {e}")
+        
+        logging.info("🧪 DEBUG: Manual testing complete\n")
+    
     def scrape_single_company(self, company_config):
-        """Scrape jobs from a single company"""
+        """Scrape jobs from a single company with detailed debugging"""
         try:
             company_name = company_config['name']
-            logging.info(f"Scraping {company_name}")
+            url = company_config['url']
+            logging.info(f"🔍 Scraping {company_name}")
+            logging.info(f"   URL: {url}")
             
             # Random delay to be respectful
             time.sleep(random.uniform(1, 3))
             
-            response = self.session.get(company_config['url'], timeout=15)
+            response = self.session.get(url, timeout=15)
             response.raise_for_status()
+            
+            logging.info(f"   ✅ Page loaded successfully (Status: {response.status_code})")
+            logging.info(f"   📄 Page size: {len(response.content)} bytes")
             
             soup = BeautifulSoup(response.content, 'html.parser')
             jobs_found = []
+            all_elements_found = []
             
-            # Try multiple selectors
-            job_elements = []
-            for selector in company_config['job_selectors']:
-                elements = soup.select(selector)
-                if elements:
-                    job_elements = elements[:50]  # Increased limit to capture more jobs
-                    break
+            # Try multiple selectors and log what we find
+            for i, selector in enumerate(company_config['job_selectors']):
+                try:
+                    elements = soup.select(selector)
+                    logging.info(f"   🔎 Selector {i+1} '{selector}': Found {len(elements)} elements")
+                    
+                    if elements:
+                        all_elements_found = elements[:50]  # Take first 50
+                        logging.info(f"   ✅ Using selector '{selector}' with {len(all_elements_found)} elements")
+                        break
+                except Exception as e:
+                    logging.info(f"   ❌ Selector '{selector}' failed: {e}")
+                    continue
             
-            # If no job elements found, try generic selectors
-            if not job_elements:
+            # If no job elements found with primary selectors, try generic ones
+            if not all_elements_found:
+                logging.info(f"   🔄 No elements found with primary selectors, trying generic ones...")
                 generic_selectors = [
                     'a[href*="job"]', 'a[href*="career"]', 'a[href*="position"]',
                     '.job', '.career', '.position', '.role', '.opportunity',
                     'h3', 'h4', 'div[class*="title"]'
                 ]
+                
                 for selector in generic_selectors:
                     try:
                         elements = soup.select(selector)
+                        logging.info(f"   🔎 Generic selector '{selector}': Found {len(elements)} elements")
                         if elements:
-                            job_elements = elements[:30]
+                            all_elements_found = elements[:30]
+                            logging.info(f"   ✅ Using generic selector '{selector}' with {len(all_elements_found)} elements")
                             break
-                    except:
+                    except Exception as e:
                         continue
             
-            # Process found elements
-            for element in job_elements:
+            # Log what we're about to process
+            logging.info(f"   📝 Processing {len(all_elements_found)} elements for job extraction...")
+            
+            valid_jobs = 0
+            country_filtered = 0
+            
+            # Process found elements with detailed logging
+            for j, element in enumerate(all_elements_found):
                 try:
                     job = self.extract_job_info(element, company_config)
-                    if job and self.is_relevant_job(job):
-                        jobs_found.append(job)
+                    
+                    if job:
+                        valid_jobs += 1
+                        # Log first few jobs for debugging
+                        if j < 5:
+                            logging.info(f"   📋 Job {j+1}: '{job['title']}' | Location: '{job['location']}' | Country: '{job['country']}'")
+                        
+                        if self.is_relevant_job(job):
+                            jobs_found.append(job)
+                        else:
+                            country_filtered += 1
+                            if j < 3:  # Log first few filtered jobs
+                                logging.info(f"   ❌ Filtered out (wrong country): '{job['title']}' in {job['country']}")
+                    
                 except Exception as e:
+                    if j < 3:  # Only log first few errors to avoid spam
+                        logging.info(f"   ⚠️ Error processing element {j+1}: {e}")
                     continue
+            
+            # Summary logging
+            logging.info(f"   📊 Summary for {company_name}:")
+            logging.info(f"      • HTML elements found: {len(all_elements_found)}")
+            logging.info(f"      • Valid jobs extracted: {valid_jobs}")
+            logging.info(f"      • Filtered by country: {country_filtered}")
+            logging.info(f"      • Final jobs in target countries: {len(jobs_found)}")
+            
+            # If we found very few jobs, let's see what the page actually contains
+            if len(jobs_found) == 0 and valid_jobs == 0:
+                # Check if this might be a redirect or different page structure
+                page_text = soup.get_text().lower()
+                if 'job' in page_text or 'career' in page_text:
+                    logging.info(f"   🤔 Page contains job/career keywords but no structured jobs found")
+                    logging.info(f"   📝 Page title: {soup.title.string if soup.title else 'No title'}")
+                    
+                    # Look for any links that might lead to actual job pages
+                    job_links = soup.find_all('a', href=True)
+                    career_links = [link for link in job_links if any(word in link.get('href', '').lower() for word in ['job', 'career', 'position'])]
+                    if career_links:
+                        logging.info(f"   🔗 Found {len(career_links)} potential job/career links on page")
+                else:
+                    logging.info(f"   ❌ Page doesn't seem to contain job-related content")
             
             with self.lock:
                 self.all_jobs.extend(jobs_found)
@@ -509,6 +616,9 @@ def main():
     # Load seen jobs
     seen_jobs = scraper.load_seen_jobs()
     initial_count = len(seen_jobs)
+    
+    # Debug test first few companies
+    scraper.debug_test_companies(companies)
     
     # Scrape all companies
     all_jobs = scraper.scrape_all_companies(companies)
