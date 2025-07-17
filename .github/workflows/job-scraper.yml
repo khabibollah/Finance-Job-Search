@@ -28,14 +28,23 @@ jobs:
         pip install requests beautifulsoup4 pandas openpyxl lxml html5lib
         
     - name: Run job scraper
-      env:
-        EMAIL_USER: ${{ secrets.EMAIL_USER }}
-        EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-      run: |
-        echo "Starting job scraper at $(date)"
-        python scraper.py
-        echo "Job scraper completed at $(date)"
+  env:
+    EMAIL_USER: ${{ secrets.EMAIL_USER }}
+    EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+    RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+  run: |
+    echo "Starting job scraper at $(date)"
+    echo "Python version: $(python --version)"
+    echo "Pip version: $(pip --version)"
+    echo "Installed packages:"
+    pip list
+    echo "Files in current directory:"
+    ls -la
+    echo "Checking if Excel file exists:"
+    ls -la "top companies.xlsx" || echo "Excel file not found!"
+    echo "Running Python script with verbose output:"
+    python -u scraper.py 2>&1 || echo "Python script failed with exit code $?"
+    echo "Job scraper completed at $(date)"
         
     - name: Commit updated seen jobs
       run: |
