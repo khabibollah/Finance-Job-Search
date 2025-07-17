@@ -1,164 +1,89 @@
 import requests
-from bs4 import BeautifulSoup
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
 import json
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
-import concurrent.futures
-from threading import Lock
 import logging
+from typing import List, Dict, Set
+import urllib.parse
 import re
-from urllib.parse import urljoin, urlparse
-import random
+from bs4 import BeautifulSoup
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class AllJobsScraper:
+class LinkedInJobScraper:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
         })
-        self.lock = Lock()
+        
         self.all_jobs = []
         
-        # Target countries (keep country filtering)
-        self.target_countries = ['UAE', 'Saudi Arabia', 'Qatar', 'United Kingdom', 'UK']
+        # LinkedIn location IDs for your target countries
+        self.linkedin_locations = {
+            'UAE': {
+                'Dubai': '105218', 
+                'Abu Dhabi': '104769',
+                'UAE': '104305'
+            },
+            'Saudi Arabia': {
+                'Riyadh': '106906',
+                'Jeddah': '103969', 
+                'Saudi Arabia': '103323'
+            },
+            'Qatar': {
+                'Doha': '100961',
+                'Qatar': '100876'
+            },
+            'United Kingdom': {
+                'London': '101165',
+                'Manchester': '100556',
+                'UK': '101282'
+            }
+        }
+        
+        # Senior finance keywords for LinkedIn search
+        self.finance_keywords = [
+            "CFO",
+            "Chief Financial Officer", 
+            "Finance Director",
+            "VP Finance",
+            "Finance Lead",
+            "Commercial Finance Director",
+            "Finance VP",
+            "Finance SVP",
+            "Treasury Director",
+            "FP&A Director",
+            "Financial Planning Director",
+            "Head of Finance",
+            "Regional Finance Director",
+            "Group Finance Director",
+            "Deputy CFO",
+            "Finance Controller",
+            "Business Finance Director"
+        ]
         
     def load_companies_from_excel(self):
-        """Load companies from Excel file and add additional companies"""
+        """Load companies from Excel file"""
         try:
-            # Read the Excel file (Column A, no header)
-            df = pd.read_excel('Top Companies.xlsx', header=None, names=['company'])
-            existing_companies = df['company'].tolist()
-            
-            logging.info(f"Loaded {len(existing_companies)} companies from Excel file")
-            
-            # Add additional companies to reach ~100 total
-            additional_companies = self.get_additional_companies()
-            
-            all_companies = existing_companies + additional_companies
-            
-            # Convert to company configs with career page URLs
-            company_configs = []
-            for company in all_companies:
-                config = self.create_company_config(company)
-                if config:
-                    company_configs.append(config)
-            
-            logging.info(f"Total companies configured: {len(company_configs)}")
-            return company_configs
-            
+            df = pd.read_excel('top companies.xlsx', header=None, names=['company'])
+            companies = df['company'].tolist()
+            logging.info(f"Loaded {len(companies)} companies from Excel file")
+            return companies
         except Exception as e:
             logging.error(f"Error loading companies from Excel: {e}")
-            return self.get_fallback_companies()
-    
-    def get_additional_companies(self):
-        """Add companies to reach target of ~100"""
-        additional = [
-            # Major Tech Companies
-            'Microsoft', 'Google', 'Amazon', 'Apple', 'Meta', 'Netflix', 'Adobe',
-            'Salesforce', 'Oracle', 'SAP', 'IBM', 'Cisco', 'Intel', 'Nvidia',
-            
-            # Financial Services
-            'JPMorgan Chase', 'Goldman Sachs', 'Morgan Stanley', 'BlackRock',
-            'Citigroup', 'Bank of America', 'Wells Fargo', 'American Express',
-            'Visa', 'Mastercard', 'PayPal', 'Square',
-            
-            # UAE/GCC Specific
-            'Etisalat', 'Du', 'Aramco', 'SABIC', 'Al Rajhi Bank', 'NCB',
-            'QNB', 'Ooredoo', 'Zain', 'STC', 'Majid Al Futtaim', 'Emaar',
-            'DP World', 'Expo 2020', 'DEWA', 'ADNOC', 'Mubadala',
-            
-            # UK Companies
-            'Barclays', 'HSBC', 'Lloyds', 'Standard Chartered', 'Vodafone',
-            'BT Group', 'Tesco', 'Unilever', 'BP', 'Shell', 'AstraZeneca',
-            'GSK', 'Rolls-Royce', 'BAE Systems',
-            
-            # Consulting & Professional Services
-            'McKinsey', 'BCG', 'Bain', 'Deloitte', 'PwC', 'EY', 'KPMG',
-            'Accenture', 'IBM Consulting'
-        ]
-        return additional[:37]  # Take 37 to reach ~100 total
-    
-    def create_company_config(self, company_name):
-        """Create configuration for a company including career page URL"""
-        try:
-            # Common career page patterns
-            career_patterns = [
-                '/careers', '/jobs', '/career', '/join-us', '/work-with-us',
-                '/opportunities', '/talent', '/people', '/about/careers'
-            ]
-            
-            # Try to find the company's main website
-            base_url = self.find_company_website(company_name)
-            if not base_url:
-                return None
-            
-            # Try different career page URLs
-            for pattern in career_patterns:
-                career_url = base_url.rstrip('/') + pattern
-                if self.test_url_accessible(career_url):
-                    return {
-                        'name': company_name,
-                        'url': career_url,
-                        'base_url': base_url,
-                        'job_selectors': [
-                            '.job-listing', '.job-item', '.position', '.career-item',
-                            '[class*="job"]', '[class*="career"]', '[class*="position"]',
-                            '.opportunity', '.role', '.opening', '.vacancy'
-                        ]
-                    }
-            
-            # If no career page found, use main website
-            return {
-                'name': company_name,
-                'url': base_url,
-                'base_url': base_url,
-                'job_selectors': [
-                    '.job-listing', '.job-item', '.position', '.career-item',
-                    '[class*="job"]', '[class*="career"]', '[class*="position"]'
-                ]
-            }
-            
-        except Exception as e:
-            logging.warning(f"Could not create config for {company_name}: {e}")
-            return None
-    
-    def find_company_website(self, company_name):
-        """Try to find company website URL"""
-        # Simple heuristic - convert company name to likely domain
-        company_clean = re.sub(r'[^\w\s]', '', company_name.lower())
-        company_clean = company_clean.replace(' ', '')
-        
-        # Common domain patterns
-        domain_patterns = [
-            f"https://www.{company_clean}.com",
-            f"https://{company_clean}.com", 
-            f"https://www.{company_clean}.co.uk",
-            f"https://www.{company_clean}.ae",
-            f"https://www.{company_clean}.sa"
-        ]
-        
-        for domain in domain_patterns:
-            if self.test_url_accessible(domain):
-                return domain
-        
-        # Fallback to search-based approach (simplified)
-        return f"https://www.{company_clean}.com"
-    
-    def test_url_accessible(self, url):
-        """Test if URL is accessible"""
-        try:
-            response = requests.head(url, timeout=5, allow_redirects=True)
-            return response.status_code == 200
-        except:
-            return False
+            return []
     
     def load_seen_jobs(self):
         """Load previously seen jobs"""
@@ -173,310 +98,216 @@ class AllJobsScraper:
         with open('seen_jobs.json', 'w') as f:
             json.dump(list(seen_jobs), f, indent=2)
     
-    def debug_test_companies(self, companies):
-        """Test a few companies manually to see what's happening"""
-        logging.info("🧪 DEBUG: Testing first 5 companies manually...")
+    def search_linkedin_jobs(self, keyword: str, location_id: str, location_name: str, country: str) -> List[Dict]:
+        """Search LinkedIn jobs using their public job search"""
+        jobs = []
         
-        for i, company in enumerate(companies[:5]):
-            logging.info(f"\n🔬 MANUAL TEST {i+1}: {company['name']}")
-            logging.info(f"URL: {company['url']}")
-            
-            try:
-                response = self.session.get(company['url'], timeout=10)
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                logging.info(f"Page loaded successfully. Status: {response.status_code}")
-                logging.info(f"Page title: {soup.title.string if soup.title else 'No title'}")
-                
-                # Test all our selectors
-                total_elements = 0
-                for selector in company['job_selectors']:
-                    try:
-                        elements = soup.select(selector)
-                        logging.info(f"  Selector '{selector}': {len(elements)} elements")
-                        total_elements += len(elements)
-                    except Exception as e:
-                        logging.info(f"  Selector '{selector}': ERROR - {e}")
-                
-                # Look for any text containing job keywords
-                page_text = soup.get_text().lower()
-                job_keywords = ['job', 'career', 'position', 'role', 'opportunity', 'vacancy']
-                keyword_counts = {keyword: page_text.count(keyword) for keyword in job_keywords}
-                logging.info(f"  Job keyword counts: {keyword_counts}")
-                
-                # Check for country mentions
-                country_keywords = ['uae', 'dubai', 'saudi', 'qatar', 'uk', 'london', 'riyadh', 'doha']
-                country_counts = {keyword: page_text.count(keyword) for keyword in country_keywords}
-                logging.info(f"  Country mentions: {country_counts}")
-                
-                # Check if this looks like a careers page
-                careers_indicators = ['apply', 'hiring', 'openings', 'positions', 'join our team']
-                career_signals = sum(page_text.count(indicator) for indicator in careers_indicators)
-                logging.info(f"  Career page signals: {career_signals}")
-                
-                logging.info(f"  SUMMARY: {total_elements} total elements from all selectors")
-                
-            except Exception as e:
-                logging.error(f"Debug test failed for {company['name']}: {e}")
-        
-        logging.info("🧪 DEBUG: Manual testing complete\n")
-    
-    def scrape_single_company(self, company_config):
-        """Scrape jobs from a single company with detailed debugging"""
         try:
-            company_name = company_config['name']
-            url = company_config['url']
-            logging.info(f"🔍 Scraping {company_name}")
-            logging.info(f"   URL: {url}")
+            # LinkedIn public job search URL
+            base_url = "https://www.linkedin.com/jobs/search"
             
-            # Random delay to be respectful
-            time.sleep(random.uniform(1, 3))
+            params = {
+                'keywords': keyword,
+                'location': location_name,
+                'locationId': location_id,
+                'geoId': location_id,
+                'sortBy': 'DD',  # Date descending (newest first)
+                'position': '1',
+                'pageNum': '0',
+                'start': '0'
+            }
+            
+            url = f"{base_url}?" + urllib.parse.urlencode(params)
+            logging.info(f"Searching LinkedIn: {keyword} in {location_name}")
             
             response = self.session.get(url, timeout=15)
-            response.raise_for_status()
             
-            logging.info(f"   ✅ Page loaded successfully (Status: {response.status_code})")
-            logging.info(f"   📄 Page size: {len(response.content)} bytes")
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            jobs_found = []
-            all_elements_found = []
-            
-            # Try multiple selectors and log what we find
-            for i, selector in enumerate(company_config['job_selectors']):
-                try:
-                    elements = soup.select(selector)
-                    logging.info(f"   🔎 Selector {i+1} '{selector}': Found {len(elements)} elements")
-                    
-                    if elements:
-                        all_elements_found = elements[:50]  # Take first 50
-                        logging.info(f"   ✅ Using selector '{selector}' with {len(all_elements_found)} elements")
-                        break
-                except Exception as e:
-                    logging.info(f"   ❌ Selector '{selector}' failed: {e}")
-                    continue
-            
-            # If no job elements found with primary selectors, try generic ones
-            if not all_elements_found:
-                logging.info(f"   🔄 No elements found with primary selectors, trying generic ones...")
-                generic_selectors = [
-                    'a[href*="job"]', 'a[href*="career"]', 'a[href*="position"]',
-                    '.job', '.career', '.position', '.role', '.opportunity',
-                    'h3', 'h4', 'div[class*="title"]'
-                ]
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
                 
-                for selector in generic_selectors:
+                # Find job cards on LinkedIn
+                job_cards = soup.find_all('div', {'class': lambda x: x and 'result-card' in x}) or \
+                           soup.find_all('div', {'class': lambda x: x and 'job-search-card' in x}) or \
+                           soup.find_all('li', {'class': lambda x: x and 'result-card' in x})
+                
+                logging.info(f"Found {len(job_cards)} job cards on page")
+                
+                for card in job_cards[:20]:  # Limit to first 20 jobs per search
                     try:
-                        elements = soup.select(selector)
-                        logging.info(f"   🔎 Generic selector '{selector}': Found {len(elements)} elements")
-                        if elements:
-                            all_elements_found = elements[:30]
-                            logging.info(f"   ✅ Using generic selector '{selector}' with {len(all_elements_found)} elements")
-                            break
+                        job = self.extract_job_from_card(card, country, location_name)
+                        if job:
+                            jobs.append(job)
                     except Exception as e:
+                        logging.warning(f"Error extracting job from card: {e}")
                         continue
+                
+                # Rate limiting
+                time.sleep(2)
+                
+            else:
+                logging.warning(f"LinkedIn search returned status {response.status_code}")
+                
+        except Exception as e:
+            logging.error(f"Error searching LinkedIn for {keyword} in {location_name}: {e}")
+        
+        logging.info(f"LinkedIn: Found {len(jobs)} jobs for '{keyword}' in {location_name}")
+        return jobs
+    
+    def extract_job_from_card(self, card, country: str, location: str) -> Dict:
+        """Extract job information from LinkedIn job card"""
+        try:
+            # Extract title
+            title_elem = card.find('h3') or card.find('a', {'class': lambda x: x and 'job-title' in x}) or \
+                        card.find('span', {'class': lambda x: x and 'sr-only' in x})
             
-            # Log what we're about to process
-            logging.info(f"   📝 Processing {len(all_elements_found)} elements for job extraction...")
+            title = ""
+            if title_elem:
+                # Try to get text from various elements
+                title = title_elem.get_text(strip=True)
+                if not title and title_elem.find('a'):
+                    title = title_elem.find('a').get_text(strip=True)
             
-            valid_jobs = 0
-            country_filtered = 0
+            if not title or len(title) < 5:
+                return None
             
-            # Process found elements with detailed logging
-            for j, element in enumerate(all_elements_found):
-                try:
-                    job = self.extract_job_info(element, company_config)
-                    
-                    if job:
-                        valid_jobs += 1
-                        # Log first few jobs for debugging
-                        if j < 5:
-                            logging.info(f"   📋 Job {j+1}: '{job['title']}' | Location: '{job['location']}' | Country: '{job['country']}'")
-                        
-                        if self.is_relevant_job(job):
-                            jobs_found.append(job)
-                        else:
-                            country_filtered += 1
-                            if j < 3:  # Log first few filtered jobs
-                                logging.info(f"   ❌ Filtered out (wrong country): '{job['title']}' in {job['country']}")
-                    
-                except Exception as e:
-                    if j < 3:  # Only log first few errors to avoid spam
-                        logging.info(f"   ⚠️ Error processing element {j+1}: {e}")
-                    continue
+            # Extract company
+            company_elem = card.find('h4') or card.find('a', {'class': lambda x: x and 'company' in x}) or \
+                          card.find('span', {'class': lambda x: x and 'company' in x})
             
-            # Summary logging
-            logging.info(f"   📊 Summary for {company_name}:")
-            logging.info(f"      • HTML elements found: {len(all_elements_found)}")
-            logging.info(f"      • Valid jobs extracted: {valid_jobs}")
-            logging.info(f"      • Filtered by country: {country_filtered}")
-            logging.info(f"      • Final jobs in target countries: {len(jobs_found)}")
+            company = "Unknown Company"
+            if company_elem:
+                company = company_elem.get_text(strip=True)
             
-            # If we found very few jobs, let's see what the page actually contains
-            if len(jobs_found) == 0 and valid_jobs == 0:
-                # Check if this might be a redirect or different page structure
-                page_text = soup.get_text().lower()
-                if 'job' in page_text or 'career' in page_text:
-                    logging.info(f"   🤔 Page contains job/career keywords but no structured jobs found")
-                    logging.info(f"   📝 Page title: {soup.title.string if soup.title else 'No title'}")
-                    
-                    # Look for any links that might lead to actual job pages
-                    job_links = soup.find_all('a', href=True)
-                    career_links = [link for link in job_links if any(word in link.get('href', '').lower() for word in ['job', 'career', 'position'])]
-                    if career_links:
-                        logging.info(f"   🔗 Found {len(career_links)} potential job/career links on page")
+            # Extract URL
+            job_url = ""
+            link_elem = card.find('a', href=True)
+            if link_elem:
+                href = link_elem.get('href')
+                if href.startswith('/'):
+                    job_url = "https://www.linkedin.com" + href
                 else:
-                    logging.info(f"   ❌ Page doesn't seem to contain job-related content")
+                    job_url = href
+                    
+                # Clean LinkedIn URL
+                if 'linkedin.com' in job_url and '?' in job_url:
+                    job_url = job_url.split('?')[0]
             
-            with self.lock:
-                self.all_jobs.extend(jobs_found)
+            # Extract location from text
+            card_text = card.get_text()
+            extracted_location = self.extract_location_from_text(card_text, location)
             
-            logging.info(f"✅ {company_name}: Found {len(jobs_found)} jobs in target countries")
-            return jobs_found
+            # Create job object
+            job = {
+                'id': f"linkedin:{job_url.split('/')[-1] if job_url else title}",
+                'title': title,
+                'company': company,
+                'location': extracted_location,
+                'country': country,
+                'url': job_url,
+                'description': card_text[:200] + "..." if len(card_text) > 200 else card_text,
+                'posted_date': datetime.now().strftime('%Y-%m-%d'),
+                'source': 'LinkedIn'
+            }
+            
+            return job
             
         except Exception as e:
-            logging.error(f"❌ Error scraping {company_config['name']}: {e}")
-            return []
-    
-    def extract_job_info(self, element, company_config):
-        """Extract job information from HTML element"""
-        # Get text content
-        element_text = element.get_text(strip=True)
-        
-        # Skip if text is too short or looks like navigation
-        if len(element_text) < 5 or element_text.lower() in ['jobs', 'careers', 'search', 'apply', 'home']:
+            logging.warning(f"Error extracting job details: {e}")
             return None
-        
-        # Try to find title
-        title = None
-        if element.name in ['h1', 'h2', 'h3', 'h4', 'h5']:
-            title = element_text
-        elif element.name == 'a':
-            title = element_text or element.get('title', '')
-        else:
-            # Look for title in child elements
-            title_elem = element.find(['h1', 'h2', 'h3', 'h4', 'h5', 'a'])
-            if title_elem:
-                title = title_elem.get_text(strip=True)
-            else:
-                # Use first line of text as title
-                lines = element_text.split('\n')
-                title = lines[0].strip() if lines else element_text
-        
-        if not title or len(title) < 3:
-            return None
-        
-        # Skip common non-job elements
-        skip_keywords = ['cookie', 'privacy', 'about us', 'contact', 'home', 'search', 'filter', 'menu']
-        if any(keyword in title.lower() for keyword in skip_keywords):
-            return None
-        
-        # Extract URL
-        job_url = ''
-        if element.name == 'a':
-            job_url = element.get('href', '')
-        else:
-            link_elem = element.find('a')
-            if link_elem:
-                job_url = link_elem.get('href', '')
-        
-        if job_url and not job_url.startswith('http'):
-            job_url = urljoin(company_config['base_url'], job_url)
-        
-        return {
-            'id': f"{company_config['name']}:{job_url or title}",
-            'company': company_config['name'],
-            'title': title,
-            'url': job_url,
-            'location': self.extract_location(element_text),
-            'country': self.extract_country(element_text),
-            'full_text': element_text
-        }
     
-    def is_relevant_job(self, job):
-        """Check if job is in target countries (NO title filtering)"""
-        # Only filter by country - accept ALL job titles
-        has_target_country = job['country'] in self.target_countries
-        
-        return has_target_country
-    
-    def extract_location(self, text):
-        """Extract specific location from text"""
+    def extract_location_from_text(self, text: str, default_location: str) -> str:
+        """Extract specific location from job card text"""
         text_lower = text.lower()
         
         # UAE locations
-        uae_locations = {
-            'dubai': 'Dubai, UAE',
-            'abu dhabi': 'Abu Dhabi, UAE',
-            'sharjah': 'Sharjah, UAE',
-            'ajman': 'Ajman, UAE'
-        }
+        if 'dubai' in text_lower:
+            return 'Dubai, UAE'
+        elif 'abu dhabi' in text_lower:
+            return 'Abu Dhabi, UAE'
+        elif 'sharjah' in text_lower:
+            return 'Sharjah, UAE'
         
         # Saudi locations
-        saudi_locations = {
-            'riyadh': 'Riyadh, Saudi Arabia',
-            'jeddah': 'Jeddah, Saudi Arabia',
-            'dammam': 'Dammam, Saudi Arabia',
-            'khobar': 'Khobar, Saudi Arabia'
-        }
+        elif 'riyadh' in text_lower:
+            return 'Riyadh, Saudi Arabia'
+        elif 'jeddah' in text_lower:
+            return 'Jeddah, Saudi Arabia'
+        elif 'dammam' in text_lower:
+            return 'Dammam, Saudi Arabia'
         
         # Qatar locations
-        qatar_locations = {
-            'doha': 'Doha, Qatar',
-            'qatar': 'Qatar'
-        }
+        elif 'doha' in text_lower:
+            return 'Doha, Qatar'
+        elif 'qatar' in text_lower and 'doha' not in text_lower:
+            return 'Qatar'
         
         # UK locations
-        uk_locations = {
-            'london': 'London, UK',
-            'manchester': 'Manchester, UK',
-            'birmingham': 'Birmingham, UK',
-            'edinburgh': 'Edinburgh, UK',
-            'glasgow': 'Glasgow, UK'
-        }
+        elif 'london' in text_lower:
+            return 'London, UK'
+        elif 'manchester' in text_lower:
+            return 'Manchester, UK'
+        elif 'birmingham' in text_lower:
+            return 'Birmingham, UK'
+        elif 'edinburgh' in text_lower:
+            return 'Edinburgh, UK'
         
-        all_locations = {**uae_locations, **saudi_locations, **qatar_locations, **uk_locations}
-        
-        for keyword, location in all_locations.items():
-            if keyword in text_lower:
-                return location
-        
-        return 'Location TBD'
+        # Default to the search location
+        return default_location
     
-    def extract_country(self, text):
-        """Extract country from text"""
-        text_lower = text.lower()
+    def search_all_linkedin_jobs(self) -> List[Dict]:
+        """Search LinkedIn for all target positions across all locations"""
+        all_jobs = []
         
-        if any(word in text_lower for word in ['uae', 'dubai', 'abu dhabi', 'emirates', 'sharjah']):
-            return 'UAE'
-        elif any(word in text_lower for word in ['saudi', 'riyadh', 'jeddah', 'ksa']):
-            return 'Saudi Arabia'
-        elif any(word in text_lower for word in ['qatar', 'doha']):
-            return 'Qatar'
-        elif any(word in text_lower for word in ['uk', 'united kingdom', 'london', 'manchester', 'birmingham']):
-            return 'United Kingdom'
-        else:
-            return 'Unknown'
+        logging.info("🚀 Starting comprehensive LinkedIn job search")
+        
+        # Search each keyword in each location
+        for keyword in self.finance_keywords:
+            for country, locations in self.linkedin_locations.items():
+                for location_name, location_id in locations.items():
+                    
+                    jobs = self.search_linkedin_jobs(keyword, location_id, location_name, country)
+                    all_jobs.extend(jobs)
+                    
+                    # Be respectful with rate limiting
+                    time.sleep(3)
+        
+        # Remove duplicates based on job ID
+        seen_ids = set()
+        unique_jobs = []
+        for job in all_jobs:
+            if job['id'] not in seen_ids:
+                seen_ids.add(job['id'])
+                unique_jobs.append(job)
+        
+        logging.info(f"Found {len(unique_jobs)} unique jobs on LinkedIn")
+        return unique_jobs
     
-    def scrape_all_companies(self, companies):
-        """Scrape all companies in parallel"""
-        logging.info(f"🚀 Starting parallel scraping of {len(companies)} companies")
+    def filter_by_companies(self, jobs: List[Dict], target_companies: List[str]) -> List[Dict]:
+        """Filter jobs to prioritize companies from Excel list"""
+        company_names_lower = [comp.lower() for comp in target_companies]
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {executor.submit(self.scrape_single_company, company): company 
-                      for company in companies}
+        priority_jobs = []
+        other_jobs = []
+        
+        for job in jobs:
+            job_company_lower = job['company'].lower()
             
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception as e:
-                    company = futures[future]
-                    logging.error(f"Failed to scrape {company['name']}: {e}")
+            # Check if job company matches any target company
+            is_target_company = any(
+                target_comp in job_company_lower or job_company_lower in target_comp
+                for target_comp in company_names_lower
+            )
+            
+            if is_target_company:
+                priority_jobs.append(job)
+            else:
+                other_jobs.append(job)
         
-        return self.all_jobs
+        # Return priority jobs first, then others (limited)
+        return priority_jobs + other_jobs[:50]  # Limit other jobs to 50
     
-    def send_email(self, new_jobs):
-        """Send email with all new job listings organized by country and company"""
+    def send_email(self, new_jobs: List[Dict]):
+        """Send email with new LinkedIn job listings"""
         if not new_jobs:
             logging.info("No new jobs found - skipping email")
             return
@@ -501,29 +332,32 @@ class AllJobsScraper:
         msg = MIMEMultipart()
         msg['From'] = email_user
         msg['To'] = recipient
-        msg['Subject'] = f"🌍 {len(new_jobs)} New Job Opportunities Across {len(jobs_by_country)} Countries"
+        msg['Subject'] = f"💼 {len(new_jobs)} New Senior Finance Jobs from LinkedIn"
         
         # Create comprehensive HTML email
         html_body = f"""
         <html>
         <body style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 1000px; margin: 0 auto; line-height: 1.6;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                <h1 style="margin: 0; font-size: 28px;">All Jobs Alert</h1>
+            <div style="background: linear-gradient(135deg, #0077B5 0%, #005885 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                <h1 style="margin: 0; font-size: 28px;">LinkedIn Finance Jobs Alert</h1>
                 <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">
                     {datetime.now().strftime('%A, %B %d, %Y - 7:00 AM UAE Time')}
                 </p>
+                <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.8;">
+                    Powered by LinkedIn Job Search
+                </p>
             </div>
             
-            <div style="background-color: #f8f9fa; padding: 25px; border-left: 4px solid #28a745;">
-                <h3 style="color: #28a745; margin-top: 0;">📊 Today's Summary</h3>
+            <div style="background-color: #f8f9fa; padding: 25px; border-left: 4px solid #0077B5;">
+                <h3 style="color: #0077B5; margin-top: 0;">📊 Today's LinkedIn Results</h3>
                 <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;">
                     <div>
-                        <p><strong>{len(new_jobs)}</strong> new job opportunities</p>
-                        <p><strong>{len(jobs_by_country)}</strong> countries with openings</p>
+                        <p><strong>{len(new_jobs)}</strong> new senior finance positions</p>
+                        <p><strong>{len(jobs_by_country)}</strong> countries with opportunities</p>
                     </div>
                     <div>
                         <p><strong>{sum(len(companies) for companies in jobs_by_country.values())}</strong> companies hiring</p>
-                        <p><strong>Coverage:</strong> All roles in UAE, Saudi Arabia, Qatar & UK</p>
+                        <p><strong>Focus:</strong> CFO, Finance Director, VP Finance roles</p>
                     </div>
                 </div>
             </div>
@@ -535,7 +369,7 @@ class AllJobsScraper:
             
             html_body += f"""
             <div style="margin: 30px 0;">
-                <h2 style="color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; background-color: #ecf0f1; padding: 15px; margin: 0;">
+                <h2 style="color: #2c3e50; border-bottom: 3px solid #0077B5; padding-bottom: 10px; background-color: #ecf0f1; padding: 15px; margin: 0;">
                     🌍 {country} ({country_total} position{'s' if country_total > 1 else ''})
                 </h2>
             """
@@ -551,13 +385,15 @@ class AllJobsScraper:
                 for job in company_jobs:
                     html_body += f"""
                     <div style="border: 1px solid #dee2e6; border-radius: 8px; padding: 20px; margin: 10px 0; background-color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                        <h4 style="color: #2980b9; margin-top: 0; font-size: 18px;">{job['title']}</h4>
+                        <h4 style="color: #0077B5; margin-top: 0; font-size: 18px;">{job['title']}</h4>
                         <p style="margin: 8px 0; color: #6c757d;">📍 {job['location']}</p>
+                        <p style="margin: 8px 0; color: #6c757d; font-size: 14px;">🔗 Source: LinkedIn</p>
+                        <p style="margin: 8px 0; color: #6c757d; font-size: 13px;">{job['description'][:150]}...</p>
                         <div style="margin-top: 15px;">
                             <a href="{job['url']}" target="_blank" 
-                               style="background: linear-gradient(45deg, #3498db, #2980b9); color: white; padding: 12px 24px; 
+                               style="background: linear-gradient(45deg, #0077B5, #005885); color: white; padding: 12px 24px; 
                                       text-decoration: none; border-radius: 25px; display: inline-block; font-weight: 500;">
-                                View Position →
+                                View on LinkedIn →
                             </a>
                         </div>
                     </div>
@@ -571,12 +407,12 @@ class AllJobsScraper:
         html_body += f"""
             <div style="background-color: #6c757d; color: white; padding: 25px; text-align: center; border-radius: 0 0 10px 10px; margin-top: 40px;">
                 <p style="margin: 0; font-size: 14px;">
-                    <strong>Automated Daily Monitoring</strong><br>
-                    Scanning ~100 companies • Running daily at 7:00 AM UAE time<br>
-                    <em>ALL job opportunities in UAE, Saudi Arabia, Qatar & UK</em>
+                    <strong>LinkedIn Professional Network</strong><br>
+                    Advanced job search • Running daily at 7:00 AM UAE time<br>
+                    <em>CFO, Finance Director, VP Finance roles in UAE, Saudi Arabia, Qatar & UK</em>
                 </p>
                 <p style="margin: 10px 0 0 0; font-size: 12px; opacity: 0.8;">
-                    Powered by GitHub Actions • Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
+                    Source: LinkedIn Jobs • Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
                 </p>
             </div>
         </body>
@@ -593,38 +429,29 @@ class AllJobsScraper:
             logging.info(f"✅ Email sent successfully to {recipient} with {len(new_jobs)} jobs")
         except Exception as e:
             logging.error(f"❌ Failed to send email: {e}")
-    
-    def get_fallback_companies(self):
-        """Fallback company list if Excel file fails"""
-        companies = [
-            'Microsoft', 'Google', 'Amazon', 'Apple', 'Meta', 'Salesforce',
-            'Emirates NBD', 'ADNOC', 'Etisalat', 'Aramco', 'SABIC',
-            'HSBC', 'Barclays', 'Standard Chartered', 'BP', 'Shell'
-        ]
-        return [self.create_company_config(company) for company in companies if self.create_company_config(company)]
 
 def main():
-    scraper = AllJobsScraper()
+    scraper = LinkedInJobScraper()
     
-    logging.info("🔍 Starting comprehensive job search for ALL positions")
+    logging.info("🔍 Starting LinkedIn-focused job search for senior finance positions")
     start_time = time.time()
     
-    # Load companies
-    companies = scraper.load_companies_from_excel()
-    logging.info(f"Loaded {len(companies)} companies for monitoring")
+    # Load companies from Excel for filtering
+    target_companies = scraper.load_companies_from_excel()
+    logging.info(f"Loaded {len(target_companies)} target companies for prioritization")
     
     # Load seen jobs
     seen_jobs = scraper.load_seen_jobs()
     initial_count = len(seen_jobs)
     
-    # Debug test first few companies
-    scraper.debug_test_companies(companies)
+    # Search LinkedIn for all positions
+    all_jobs = scraper.search_all_linkedin_jobs()
     
-    # Scrape all companies
-    all_jobs = scraper.scrape_all_companies(companies)
+    # Filter and prioritize by target companies
+    filtered_jobs = scraper.filter_by_companies(all_jobs, target_companies)
     
-    # Filter for new jobs
-    new_jobs = [job for job in all_jobs if job['id'] not in seen_jobs]
+    # Filter for new jobs only
+    new_jobs = [job for job in filtered_jobs if job['id'] not in seen_jobs]
     
     # Update seen jobs
     for job in new_jobs:
@@ -641,9 +468,12 @@ def main():
     duration = end_time - start_time
     
     logging.info(f"""
-    📈 SCRAPING COMPLETE:
+    📈 LINKEDIN JOB SEARCH COMPLETE:
     ⏱️  Duration: {duration:.1f} seconds
-    🏢 Companies monitored: {len(companies)}
+    🎯 Finance keywords searched: {len(scraper.finance_keywords)}
+    🌍 Locations searched: {sum(len(locs) for locs in scraper.linkedin_locations.values())}
+    🏢 Total jobs found: {len(all_jobs)}
+    ✨ Jobs after filtering: {len(filtered_jobs)}
     🆕 New jobs found: {len(new_jobs)}
     💾 Total jobs tracked: {len(seen_jobs)}
     📧 Email sent to: kamran.habibollah@gmail.com
