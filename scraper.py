@@ -55,7 +55,7 @@ class MultiCountryJobScraper:
         """Load companies from Excel file and add additional companies"""
         try:
             # Read the Excel file (Column A, no header)
-            df = pd.read_excel('top companies.xlsx', header=None, names=['company'])
+            df = pd.read_excel('Top Companies.xlsx', header=None, names=['company'])
             existing_companies = df['company'].tolist()
             
             logging.info(f"Loaded {len(existing_companies)} companies from Excel file")
